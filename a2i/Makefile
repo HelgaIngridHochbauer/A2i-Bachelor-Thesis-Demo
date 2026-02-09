@@ -48,7 +48,7 @@ PY_FILES = \
 
 UI_FILES = dialog.ui save_data.ui
 
-EXTRAS = metadata.txt icons/logo.png
+EXTRAS = metadata.txt icon.png
 
 EXTRA_DIRS =
 

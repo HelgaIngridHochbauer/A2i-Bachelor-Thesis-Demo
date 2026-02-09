@@ -66,6 +66,36 @@ def _get_standalone_python():
     return PYTHON_PATH
 
 
+def _load_horizon_module(script_path):
+    """Load the horizon script module (script.py) for in-process use."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("a2i_horizon_script", script_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _download_horizon_data(script_path, hwt_id, on_waiting=None):
+    """
+    Download the full horizon profile from HeyWhatsThat.
+    Returns the horizon dict (with 'data' key containing az/alt pairs).
+    This allows querying altitude at multiple azimuths without re-downloading.
+    HeyWhatsThat can take up to ~2 minutes to generate a panorama.
+    """
+    mod = _load_horizon_module(script_path)
+    return mod.download_hwt(hwt_id, on_waiting=on_waiting)
+
+
+def _horizon_altitude(script_path, hor, azimuth):
+    """
+    Interpolate altitude at a given azimuth from previously downloaded horizon data.
+    hor: horizon dict from _download_horizon_data().
+    Returns altitude in degrees.
+    """
+    mod = _load_horizon_module(script_path)
+    return mod.hor2alt(hor, azimuth)
+
+
 def _run_horizon_script(script_path, hwt_id, azimuth, on_waiting=None):
     """
     Run horizon script: subprocess if a standalone Python is configured (no QGIS window),
@@ -84,12 +114,8 @@ def _run_horizon_script(script_path, hwt_id, azimuth, on_waiting=None):
         if result.returncode != 0:
             raise RuntimeError(result.stderr or "Horizon script failed")
         return float(result.stdout.strip())
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("a2i_horizon_script", script_path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    hor = mod.download_hwt(hwt_id, on_waiting=on_waiting)
-    return mod.hor2alt(hor, azimuth)
+    hor = _download_horizon_data(script_path, hwt_id, on_waiting=on_waiting)
+    return _horizon_altitude(script_path, hor, azimuth)
 
 
 #Main tool
@@ -380,12 +406,13 @@ class DeclinationTool(QgsMapToolEmitPoint):
             self.iface.messageBar().pushWarning("Warning", f"Clustering failed: {error_msg}")
             return []
         
-        # Group objects by cluster
+        # Group objects by cluster, preserving global object index
         clusters = {}
         for idx, label in enumerate(labels):
             if label not in clusters:
                 clusters[label] = []
-            clusters[label].append(object_centroids[idx])
+            # Append (global_index, centroid_data) so the global ID is never lost
+            clusters[label].append((idx, object_centroids[idx]))
         
         # Cache coordinate transform (create once, reuse many times)
         tr = QgsCoordinateTransform(QgsCoordinateReferenceSystem(TARGET_CRS), 
@@ -401,12 +428,12 @@ class DeclinationTool(QgsMapToolEmitPoint):
             QCoreApplication.processEvents()
             
             # Calculate mean centroid
-            # Protect against division by zero (shouldn't happen, but safer)
+            # objects is a list of (global_index, centroid_data) tuples
             num_objects_in_cluster = len(objects)
             if num_objects_in_cluster == 0:
                 continue  # Skip empty clusters
-            mean_lat = sum(obj[0] for obj in objects) / num_objects_in_cluster
-            mean_lon = sum(obj[1] for obj in objects) / num_objects_in_cluster
+            mean_lat = sum(obj[1][0] for obj in objects) / num_objects_in_cluster
+            mean_lon = sum(obj[1][1] for obj in objects) / num_objects_in_cluster
             
             # Transform back to map coordinates for visualization
             try:
@@ -670,73 +697,53 @@ class DeclinationTool(QgsMapToolEmitPoint):
             print(f"Error saving batch results: {e}")
     
     def calculate_cluster_orientation(self, cluster_info, progress=None):
-        """Calculate orientation and declination for a cluster centroid"""
+        """
+        Calculate orientation and declination for a cluster.
+        
+        Workflow:
+        1. Use the cluster's MEAN CENTROID to request ONE horizon profile from HeyWhatsThat.
+        2. For EACH OBJECT in the cluster, use the object's own azimuth to interpolate
+           altitude from that shared horizon profile, then compute declination individually.
+        
+        Returns a dict with cluster-level info and a list of per-object results.
+        """
         centroid_lat = cluster_info['centroid_lat']
         centroid_lon = cluster_info['centroid_lon']
         objects = cluster_info['objects']
+        cluster_id = cluster_info['cluster_id']
         
-        # Calculate average azimuth from all objects in cluster
-        # Use stored azimuth if available, otherwise calculate from points
-        azimuths = []
-        for obj in objects:
-            # obj format: (centroid_lat, centroid_lon, obj_points, obj_transformed, azimuth_or_none)
-            if len(obj) >= 5 and obj[4] is not None:
-                # Use stored azimuth
-                az = obj[4]
-            else:
-                # Calculate azimuth from points
-                obj_points = obj[2]
-                az = computeAzimuth([obj_points[0], obj_points[1]])
-            azimuths.append(az)
+        # --- Step 1: Get horizon profile for the cluster centroid ---
         
-        # Use mean azimuth (or could use median for robustness)
-        # Protect against division by zero
-        if not azimuths:
-            mean_az = 0
-        else:
-            mean_az = sum(azimuths) / len(azimuths)
-        
-        # Process events before network request
         QCoreApplication.processEvents()
         if progress:
-            progress.setLabelText(f"Requesting horizon data for cluster {cluster_info['cluster_id']}...")
+            progress.setLabelText(f"Requesting horizon data for cluster {cluster_id}...")
             QCoreApplication.processEvents()
         
-        # Request horizon code with shorter timeout and frequent event processing
+        # Request HeyWhatsThat panorama code using cluster mean centroid
         req = "http://heywhatsthat.com/bin/query.cgi?lat={0:.4f}&lon={1:.4f}&name={2}".format(
-            centroid_lat, centroid_lon, f"Cluster_{cluster_info['cluster_id']}")
+            centroid_lat, centroid_lon, f"Cluster_{cluster_id}")
         
-        # Use shorter timeout and process events more frequently
         r = None
         max_retries = 10
         for i in range(max_retries + 1):
-            # Process events multiple times before request to keep UI responsive
             for _ in range(3):
                 QCoreApplication.processEvents()
             if progress and progress.wasCanceled():
                 return None
-            
             try:
-                # Shorter timeout (3 seconds instead of 10) to reduce blocking time
                 r = requests.get(req, timeout=3)
-                
-                # Process events immediately after request
                 for _ in range(3):
                     QCoreApplication.processEvents()
-                
                 if r and r.text and r.text.strip():
                     break
-                    
             except requests.exceptions.RequestException as e:
-                print(f"Network error for cluster {cluster_info['cluster_id']}: {e}")
+                print(f"Network error for cluster {cluster_id}: {e}")
                 for _ in range(3):
                     QCoreApplication.processEvents()
                 if i >= max_retries:
                     return None
-            
             if i < max_retries:
-                # Wait with very frequent event processing (every 0.1 second)
-                for wait_step in range(10):  # Break 1 second into 10 steps
+                for wait_step in range(10):
                     QCoreApplication.processEvents()
                     if progress and progress.wasCanceled():
                         return None
@@ -744,47 +751,86 @@ class DeclinationTool(QgsMapToolEmitPoint):
         
         if not r or not r.text or not r.text.strip():
             return None
-        
         code = r.text.strip("\n")
         if code == "":
             return None
         
+        # Download the FULL horizon data (once for the whole cluster)
         QCoreApplication.processEvents()
         if progress:
-            progress.setLabelText(f"Calculating altitude for cluster {cluster_info['cluster_id']}...")
+            progress.setLabelText(f"Downloading horizon profile for cluster {cluster_id}...")
             QCoreApplication.processEvents()
         
         script_path = os.path.join(self.scriptPath, "script.py")
         if not os.path.exists(script_path):
             return None
         try:
-            altitude = _run_horizon_script(script_path, code, mean_az)
+            horizon_data = _download_horizon_data(script_path, code)
         except Exception as e:
-            print(f"Horizon script error for cluster {cluster_info['cluster_id']}: {e}")
+            print(f"Horizon download error for cluster {cluster_id}: {e}")
             return None
         
-        # Calculate declination
-        # computeDeclination expects points where y() is latitude (in EPSG:4326)
-        # Create QgsPointXY with (lon, lat) so y() returns latitude
-        decl_point = QgsPointXY(centroid_lon, centroid_lat)
-        decl = computeDeclination(altitude, mean_az, [decl_point])
+        # --- Step 2: For each object, compute altitude + declination using its own azimuth ---
         
-        # Check stars
-        stars = checkDeclinationBSC5(decl, self.scriptPath)
-        sunMoon = checkDeclinationSunMoon(decl)
-        if sunMoon != "None":
-            stars.append(sunMoon)
+        QCoreApplication.processEvents()
+        if progress:
+            progress.setLabelText(f"Computing declinations for cluster {cluster_id} objects...")
+            QCoreApplication.processEvents()
+        
+        object_results = []
+        for item in objects:
+            # item format: (global_index, centroid_data)
+            # centroid_data: (centroid_lat, centroid_lon, obj_points, obj_transformed, azimuth_or_none)
+            global_idx, obj = item
+            
+            # Get object's own azimuth
+            if len(obj) >= 5 and obj[4] is not None:
+                obj_az = obj[4]
+            else:
+                obj_points = obj[2]
+                obj_az = computeAzimuth([obj_points[0], obj_points[1]])
+            
+            # Get object's own location (midpoint of transformed points)
+            obj_transformed = obj[3]
+            obj_lat = (obj_transformed[0].y() + obj_transformed[1].y()) / 2.0
+            obj_lon = (obj_transformed[0].x() + obj_transformed[1].x()) / 2.0
+            
+            # Interpolate altitude at this object's azimuth from the cluster's horizon profile
+            try:
+                altitude = _horizon_altitude(script_path, horizon_data, obj_az)
+            except Exception as e:
+                print(f"Altitude interpolation error for object {global_idx} in cluster {cluster_id}: {e}")
+                continue
+            
+            # Compute declination using object's own azimuth, altitude, and latitude
+            decl_point = QgsPointXY(obj_lon, obj_lat)
+            decl = computeDeclination(altitude, obj_az, [decl_point])
+            
+            # Check celestial bodies
+            stars = checkDeclinationBSC5(decl, self.scriptPath)
+            sunMoon = checkDeclinationSunMoon(decl)
+            if sunMoon != "None":
+                stars.append(sunMoon)
+            
+            object_results.append({
+                'object_id': global_idx,  # Global object ID (unique across all clusters)
+                'latitude': obj_lat,
+                'longitude': obj_lon,
+                'azimuth': obj_az,
+                'altitude': altitude,
+                'declination': decl,
+                'stars': stars,
+            })
+        
+        if not object_results:
+            return None
         
         return {
-            'cluster_id': cluster_info['cluster_id'],
+            'cluster_id': cluster_id,
             'centroid_lat': centroid_lat,
             'centroid_lon': centroid_lon,
-            'azimuth': mean_az,
-            'altitude': altitude,
-            'declination': decl,
-            'stars': stars,
             'num_objects': cluster_info['num_objects'],
-            'objects': objects  # Include objects for CSV export
+            'object_results': object_results,  # Per-object declinations
         }
     
     def process_all_clusters(self):
@@ -881,39 +927,40 @@ class DeclinationTool(QgsMapToolEmitPoint):
             self.iface.messageBar().pushCritical("Clustering Error", error_msg)
     
     def display_cluster_results(self):
-        """Display cluster results grouped by Cluster ID"""
+        """Display cluster results: per-object declinations grouped by cluster."""
         if not self.cluster_results:
             return
         
-        # Create results message
-        results_text = f"=== Cluster Results ({len(self.cluster_results)} clusters) ===\n\n"
-        for result in self.cluster_results:
-            stars_str = ', '.join(result['stars']) if result['stars'] else 'None'
-            results_text += f"Cluster {result['cluster_id']}:\n"
-            results_text += f"  Location: ({result['centroid_lat']:.4f}, {result['centroid_lon']:.4f})\n"
-            results_text += f"  Objects: {result['num_objects']}\n"
-            results_text += f"  Azimuth: {result['azimuth']:.2f}°\n"
-            results_text += f"  Altitude: {result['altitude']:.2f}°\n"
-            results_text += f"  Declination: {result['declination']:.2f}°\n"
-            results_text += f"  Points to: {stars_str}\n\n"
+        total_objects = sum(len(cr['object_results']) for cr in self.cluster_results)
+        results_text = f"=== Cluster Results ({len(self.cluster_results)} clusters, {total_objects} objects) ===\n\n"
+        
+        for cr in self.cluster_results:
+            results_text += f"Cluster {cr['cluster_id']} (centroid: {cr['centroid_lat']:.4f}, {cr['centroid_lon']:.4f}, {cr['num_objects']} objects):\n"
+            results_text += f"  Horizon profile from cluster centroid.\n"
+            for obj_r in cr['object_results']:
+                stars_str = ', '.join(obj_r['stars']) if obj_r['stars'] else 'None'
+                results_text += f"  Object {obj_r['object_id']}:  "
+                results_text += f"Az={obj_r['azimuth']:.2f}°  Alt={obj_r['altitude']:.2f}°  "
+                results_text += f"Decl={obj_r['declination']:.2f}°  → {stars_str}\n"
+            results_text += "\n"
         
         print(results_text)
         
-        # Show detailed message in message bar
-        if len(self.cluster_results) == 1:
-            result = self.cluster_results[0]
-            stars_str = ', '.join(result['stars']) if result['stars'] else 'None'
-            msg = f"Cluster {result['cluster_id']}: Az={result['azimuth']:.1f}° Alt={result['altitude']:.1f}° Decl={result['declination']:.1f}° → {stars_str}"
+        # Show summary in message bar
+        if total_objects == 1:
+            obj_r = self.cluster_results[0]['object_results'][0]
+            stars_str = ', '.join(obj_r['stars']) if obj_r['stars'] else 'None'
+            msg = f"Az={obj_r['azimuth']:.1f}° Alt={obj_r['altitude']:.1f}° Decl={obj_r['declination']:.1f}° → {stars_str}"
         else:
-            msg = f"Processed {len(self.cluster_results)} clusters. See console for full details."
+            msg = f"Processed {total_objects} objects across {len(self.cluster_results)} clusters. See console for details."
         
         self.iface.messageBar().pushSuccess("Clustering Complete", msg)
         
-        # Save results (save function handles empty RESULTS_PATH)
+        # Save results
         self.save_cluster_results()
     
     def save_cluster_results(self):
-        """Save all cluster results to a single CSV file"""
+        """Save per-object cluster results to a single CSV file."""
         if not self.cluster_results:
             return
         
@@ -921,11 +968,8 @@ class DeclinationTool(QgsMapToolEmitPoint):
         if RESULTS_PATH == "Empty":
             RESULTS_PATH = os.getcwd()
         
-        # Create a custom save dialog for batch results
         from qgis.PyQt.QtWidgets import QFileDialog
-        from qgis.PyQt import QtGui
         
-        logo_icon_path = ':/plugins/a2i/logo/icons/logo.png'
         filepath, _ = QFileDialog.getSaveFileName(
             None,
             "Save Cluster Results",
@@ -936,89 +980,44 @@ class DeclinationTool(QgsMapToolEmitPoint):
         if not filepath:
             return  # User cancelled
         
-        # Prepare all data for CSV
-        all_rows = []
+        # Header: each row is one object, grouped under its cluster
+        all_rows = [['cluster_id', 'object_id', 'centroid_lat', 'centroid_lon',
+                     'object_lat', 'object_lon', 'azimuth', 'altitude',
+                     'declination', 'stars', 'comments']]
         
-        # Header row
-        all_rows.append(['cluster_id', 'type', 'latitude', 'longitude', 'azimuth', 'altitude', 
-                        'declination', 'stars', 'num_objects', 'comments'])
+        for cr in self.cluster_results:
+            cluster_id = cr['cluster_id']
+            centroid_lat = cr['centroid_lat']
+            centroid_lon = cr['centroid_lon']
+            for obj_r in cr['object_results']:
+                stars_str = ', '.join(obj_r['stars']) if obj_r['stars'] else 'None'
+                all_rows.append([
+                    cluster_id,
+                    obj_r['object_id'],
+                    centroid_lat,
+                    centroid_lon,
+                    obj_r['latitude'],
+                    obj_r['longitude'],
+                    obj_r['azimuth'],
+                    obj_r['altitude'],
+                    obj_r['declination'],
+                    stars_str,
+                    f'Cluster {cluster_id}, object {obj_r["object_id"]}'
+                ])
         
-        # Add cluster results (one row per cluster)
-        for result in self.cluster_results:
-            stars_str = ', '.join(result['stars']) if result['stars'] else 'None'
-            all_rows.append([
-                result['cluster_id'],
-                'cluster_centroid',
-                result['centroid_lat'],
-                result['centroid_lon'],
-                result['azimuth'],
-                result['altitude'],
-                result['declination'],
-                stars_str,
-                result['num_objects'],
-                f'Cluster {result["cluster_id"]} with {result["num_objects"]} objects'
-            ])
-        
-        # Add individual object information (for reference)
-        for cluster_result in self.cluster_results:
-            cluster_id = cluster_result['cluster_id']
-            # Check if 'objects' key exists (it should after the fix above)
-            if 'objects' not in cluster_result:
-                print(f"Warning: No objects data for cluster {cluster_id}, skipping object rows")
-                continue
-            
-            objects = cluster_result['objects']
-            
-            for obj_idx, obj in enumerate(objects):
-                try:
-                    # obj format: (centroid_lat, centroid_lon, obj_points, obj_transformed, azimuth_or_none)
-                    obj_points = obj[2]
-                    obj_transformed = obj[3]
-                    # Get midpoint of object
-                    obj_lat = (obj_transformed[0].y() + obj_transformed[1].y()) / 2.0
-                    obj_lon = (obj_transformed[0].x() + obj_transformed[1].x()) / 2.0
-                    
-                    # Use stored azimuth if available, otherwise calculate
-                    if len(obj) >= 5 and obj[4] is not None:
-                        az = obj[4]
-                    else:
-                        az = computeAzimuth([obj_points[0], obj_points[1]])
-                    
-                    all_rows.append([
-                        cluster_id,
-                        'object',
-                        obj_lat,
-                        obj_lon,
-                        az,
-                        '',  # altitude not calculated for individual objects
-                        '',  # declination not calculated for individual objects
-                        '',  # stars not calculated for individual objects
-                        '',  # num_objects not applicable
-                        f'Object {obj_idx + 1} in cluster {cluster_id}'
-                    ])
-                except Exception as e:
-                    print(f"Error processing object {obj_idx} in cluster {cluster_id}: {e}")
-                    continue
-        
-        # Write to CSV
         try:
             with open(filepath, 'w', newline='', encoding='utf-8') as file:
                 data_writer = csv.writer(file, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
                 data_writer.writerows(all_rows)
             
+            total_objects = sum(len(cr['object_results']) for cr in self.cluster_results)
             num_clusters = len(self.cluster_results)
-            num_objects = len(self.captured_objects)
-            self.iface.messageBar().pushSuccess("Saved", 
-                f"Saved {num_clusters} clusters and {num_objects} objects to {os.path.basename(filepath)}")
-            print(f"Saved {num_clusters} clusters and {num_objects} objects to {filepath}")
-        except IOError as e:
-            error_msg = f"File I/O error: {str(e)}"
-            self.iface.messageBar().pushWarning("Save Error", error_msg)
-            print(f"Error saving results: {e}")
+            self.iface.messageBar().pushSuccess("Saved",
+                f"Saved {total_objects} objects across {num_clusters} clusters to {os.path.basename(filepath)}")
+            print(f"Saved {total_objects} objects across {num_clusters} clusters to {filepath}")
         except Exception as e:
-            error_msg = f"Failed to save results: {str(e)}"
-            self.iface.messageBar().pushWarning("Save Error", error_msg)
-            print(f"Error saving results: {e}")
+            self.iface.messageBar().pushWarning("Save Error", f"Failed to save: {e}")
+            print(f"Error saving cluster results: {e}")
     
     
     def clear_captured_points(self):

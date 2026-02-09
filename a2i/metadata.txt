@@ -27,7 +27,7 @@ tags=python, science
 
 homepage=https://github.com/marcfrincu/ArchaeoAstroInsight/
 category=Plugins
-icon=icons/logo.png
+icon=icon.png
 # experimental flag
 experimental=True
 

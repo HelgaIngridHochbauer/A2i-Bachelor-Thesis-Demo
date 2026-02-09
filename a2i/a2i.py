@@ -190,6 +190,9 @@ class ArchaeoAstroInsight:
         tool_icon_path = ':/plugins/a2i/toolbar/icons/bearing.png'
         location_icon_path = ':/plugins/a2i/toolbar/icons/location.png'
         params_icon_path = ':/plugins/a2i/toolbar/icons/settings.png'
+        delete_icon_path = ':/plugins/a2i/toolbar/icons/delete_icon.png'
+        csv_icon_path = ':/plugins/a2i/toolbar/icons/csv_icon.png'
+        cluster_icon_path = ':/plugins/a2i/toolbar/icons/cluster_icon.png'
         self.add_action(
             params_icon_path,
             text=self.tr(u'A2i settings'),
@@ -206,7 +209,6 @@ class ArchaeoAstroInsight:
             callback=self.azimuth_tool,
             parent=self.iface.mainWindow())
 
-        # Add batch mode controls
         batch_mode_icon_path = ':/plugins/a2i/toolbar/icons/settings.png'  # Reuse settings icon or create new
         self.add_action(
             batch_mode_icon_path,
@@ -214,7 +216,7 @@ class ArchaeoAstroInsight:
             callback=self.toggle_batch_mode,
             parent=self.iface.mainWindow())
         
-        cluster_icon_path = ':/plugins/a2i/toolbar/icons/bearing.png'  # Reuse bearing icon
+        
         self.add_action(
             cluster_icon_path,
             text=self.tr(u'A2i run clustering'),
@@ -228,26 +230,34 @@ class ArchaeoAstroInsight:
             callback=self.run_batch_no_clustering,
             parent=self.iface.mainWindow())
         
-        select_method_icon_path = ':/plugins/a2i/toolbar/icons/settings.png'  # Reuse settings icon
+        select_method_icon_path = ':/plugins/a2i/toolbar/icons/select.png'
         self.add_action(
             select_method_icon_path,
             text=self.tr(u'A2i select clustering method'),
             callback=self.select_clustering_method,
             parent=self.iface.mainWindow())
         
-        clear_icon_path = ':/plugins/a2i/toolbar/icons/location.png'  # Reuse location icon
+        
         self.add_action(
-            clear_icon_path,
+            delete_icon_path,
             text=self.tr(u'A2i clear points'),
             callback=self.clear_points,
             parent=self.iface.mainWindow())
         
-        import_icon_path = ':/plugins/a2i/toolbar/icons/settings.png'  # Reuse settings icon
+        
         self.add_action(
-            import_icon_path,
+            csv_icon_path,
             text=self.tr(u'A2i import from CSV'),
             callback=self.import_from_csv,
             parent=self.iface.mainWindow())
+
+        # Set the logo icon on the plugin's submenu in the Plugins menu
+        logo_icon = QIcon(':/plugins/a2i/logo/icons/logo.png')
+        plugin_menu = self.iface.pluginMenu()
+        for action in plugin_menu.actions():
+            if action.menu() and action.text().replace('&', '') == 'ArchaeoAstroInsight':
+                action.setIcon(logo_icon)
+                break
 
         # will be set False in run()
         self.first_start = True
