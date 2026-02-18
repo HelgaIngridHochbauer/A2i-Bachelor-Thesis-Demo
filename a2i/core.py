@@ -1,9 +1,9 @@
 SCRIPT_PATH = "C:\\"
 #Archaeo-Astro Insight#
 
-#################################################
-# Global parameters                            #
-#################################################
+
+# Global parameters                            
+
 QGIS_CRS = "EPSG:3857" #canvas coordinates
 TARGET_CRS = "EPSG:4326" #coordinates of your map
 
@@ -15,6 +15,11 @@ SCRIPT_SLEEP = 10
 
 DOWNLOAD_MAP = True 
 MAP_TYPE = "mt1.google.com/vt/lyrs=s&hl=en&x={x}&y={y}&z={z}"
+
+# Unified CSV header for all output modes (single, batch, clustering)
+CSV_HEADER = ['object_id', 'cluster_id', 'latitude', 'longitude',
+              'centroid_lat', 'centroid_lon', 'azimuth', 'altitude',
+              'declination', 'stars', 'comments']
 
 #################################################
 #sys.path.append(SCRIPT_PATH)
@@ -120,7 +125,7 @@ def _run_horizon_script(script_path, hwt_id, azimuth, on_waiting=None):
 
 #Main tool
 class DeclinationTool(QgsMapToolEmitPoint):
-    def __init__(self, canvas, iface, plugin_dir, resultsPath, PythonPath, scriptSleep, lineWidth, downloadMap):
+    def __init__(self, canvas, iface, plugin_dir, resultsPath, PythonPath, scriptSleep, lineWidth, downloadMap, srtmPath=''):
         self.pointList = []
         self.transformedPoints = []
         self.code = ""
@@ -131,6 +136,7 @@ class DeclinationTool(QgsMapToolEmitPoint):
         self.canvas = canvas
         self.iface = iface
         self.scriptPath = plugin_dir
+        self.srtmPath = srtmPath
         # Batch mode state management
         self.batch_mode = False
         self.captured_objects = []  # List of tuples: ((point1, point2), (transformed1, transformed2), azimuth_or_none)
@@ -153,6 +159,73 @@ class DeclinationTool(QgsMapToolEmitPoint):
         DOWNLOAD_MAP = downloadMap
 
         QgsMapToolEmitPoint.__init__(self, self.canvas)
+
+    # ------------------------------------------------------------------
+    #  Unified horizon helpers – SRTM when configured, HeyWhatsThat otherwise
+    # ------------------------------------------------------------------
+
+    def _use_srtm(self):
+        """Return True if the SRTM-based pipeline should be used."""
+        return bool(self.srtmPath and os.path.isdir(self.srtmPath))
+
+    def _compute_horizon_profile(self, lat, lon, label='', on_waiting=None,
+                                  progress=None):
+        """
+        Compute a full 360-degree horizon profile for the observer at
+        (*lat*, *lon*).
+
+        If an SRTM data folder is configured, runs the local SRTM pipeline.
+        Otherwise, falls back to HeyWhatsThat.
+
+        Returns
+        -------
+        dict
+            ``{'data': [{'az': float, 'alt': float}, ...], 'metadata': {...}}``
+        """
+        t_start = time.time()
+        if self._use_srtm():
+            source = "SRTM"
+            print("[A2i] Using LOCAL SRTM data for horizon profile"
+                  " (label='{}', lat={:.5f}, lon={:.5f})".format(label, lat, lon))
+            from .srtm_horizon.srtm_pipeline import compute_srtm_horizon
+            result = compute_srtm_horizon(
+                lat, lon,
+                srtm_folder=self.srtmPath,
+                plugin_dir=self.scriptPath,
+                target_azimuth=-1,
+                on_waiting=on_waiting,
+            )
+        else:
+            source = "HeyWhatsThat"
+            print("[A2i] Using HeyWhatsThat.com for horizon profile"
+                  " (label='{}', lat={:.5f}, lon={:.5f})".format(label, lat, lon))
+            code = self._request_hwt_code(lat, lon, label or 'horizon',
+                                          progress)
+            if not code:
+                raise RuntimeError(
+                    "Failed to obtain a HeyWhatsThat panorama code.")
+            script_path = os.path.join(self.scriptPath, "script.py")
+            result = _download_horizon_data(script_path, code,
+                                            on_waiting=on_waiting)
+        elapsed = time.time() - t_start
+        n_bins = len(result.get('data', []))
+        print("[A2i] Horizon profile complete ({}) — {:.1f}s, "
+              "{} azimuth bins".format(source, elapsed, n_bins))
+        return result
+
+    def _altitude_from_profile(self, horizon_data, azimuth):
+        """
+        Interpolate altitude at *azimuth* from a previously computed
+        horizon profile (returned by ``_compute_horizon_profile``).
+
+        Works transparently with both SRTM and HeyWhatsThat profiles.
+        """
+        if self._use_srtm():
+            from .srtm_horizon.srtm_pipeline import srtm_hor2alt
+            return srtm_hor2alt(horizon_data, azimuth)
+        else:
+            script_path = os.path.join(self.scriptPath, "script.py")
+            return _horizon_altitude(script_path, horizon_data, azimuth)
 
     def canvasPressEvent( self, e ):
         #get point on click
@@ -194,23 +267,35 @@ class DeclinationTool(QgsMapToolEmitPoint):
     
     def canvasReleaseEvent( self, e ):
         # Only process immediately if not in batch mode
-        # Workflow: horizon profile (HeyWhatsThat) + already computed azimuth + location → declination.
-        # 1. Azimuth is computed from the two points (observer → target). 2. Horizon profile gives
-        # altitude at that azimuth. 3. Declination = f(altitude, azimuth, latitude) in utility.computeDeclination.
+        # Workflow: horizon profile + already computed azimuth + location → declination.
+        # Uses SRTM data if configured, otherwise falls back to HeyWhatsThat.
         if not self.batch_mode and len(self.pointList) == 2:
-            self.handleRequest()
-            self.iface.messageBar().clearWidgets()
-            self.iface.messageBar().pushSuccess("Success","[HeyWhatsThat.com] response received")
-
-            if (self.code == ""):
-                return
-
+            source_label = "SRTM" if self._use_srtm() else "HeyWhatsThat.com"
             try:
+                t_total_start = time.time()
                 self.iface.messageBar().clearWidgets()
-                self.iface.messageBar().pushMessage("Running horizon Python script, please wait....", Qgis.Info)
-                self.handleScript()
+                self.iface.messageBar().pushMessage(
+                    "Computing horizon profile from {} ...".format(source_label),
+                    Qgis.Info)
+                QCoreApplication.processEvents()
+
+                lat = self.transformedPoints[0].y()
+                lon = self.transformedPoints[0].x()
+
+                def on_waiting(msg):
+                    self.iface.messageBar().pushMessage("A2i", msg, Qgis.Info, duration=0)
+                    QCoreApplication.processEvents()
+
+                horizon = self._compute_horizon_profile(
+                    lat, lon, label="single object", on_waiting=on_waiting)
+                self.altitude = self._altitude_from_profile(horizon, self.az)
+
+                t_total_elapsed = time.time() - t_total_start
                 self.iface.messageBar().clearWidgets()
-                self.iface.messageBar().pushSuccess("Success", "Horizon Python script finished successfully")
+                self.iface.messageBar().pushSuccess(
+                    "Success",
+                    "[{}] Altitude {:.2f}\u00b0 at azimuth {:.2f}\u00b0 ({:.1f}s)".format(
+                        source_label, self.altitude, self.az, t_total_elapsed))
 
                 self.decl = computeDeclination(self.altitude, self.az, self.transformedPoints)
                 self.stars = checkDeclinationBSC5(self.decl, self.scriptPath)
@@ -225,7 +310,7 @@ class DeclinationTool(QgsMapToolEmitPoint):
                 err_msg = str(ex)
                 self.iface.messageBar().pushCritical(
                     "Single-object result failed",
-                    "Error after HeyWhatsThat response: {} See Python console for details.".format(err_msg)
+                    "Error computing horizon ({}): {} See Python console for details.".format(source_label, err_msg)
                 )
                 print("[A2i] Single-object error: {}".format(err_msg))
                 return
@@ -266,21 +351,10 @@ class DeclinationTool(QgsMapToolEmitPoint):
     #send request for HeyWhatsThat.com code
     def handleRequest(self):
         self.iface.messageBar().pushMessage("Sending HTTP request to [HeyWhatsThat.com]. Please wait for the response.....", Qgis.Info, 2)
-        point = QgsPoint(self.transformedPoints[0].x(),self.transformedPoints[0].y())
-        #print(point)
-        req = "http://heywhatsthat.com/bin/query.cgi?lat={0:.4f}&lon={1:.4f}&name={2}".format(self.transformedPoints[0].y(), self.transformedPoints[0].x(), "Horizon1")
-        print(req) 
-        #req_test = "http://heywhatsthat.com/bin/query.cgi?lat=44.297147&lon=69.129591&name={}".format("Horizon1")
-        r = requests.get(req)
-        #print(r)
-        i = 0
-        while r.text == "" and i <= 10:
-            time.sleep(2)
-            r = requests.get(req)
-            print("[HeyWhatsThat.com] Waiting for server response, please wait...")
-            i += 1
-        print("[HeyWhatsThat.com] Horizon profile code is " + r.text.strip("\n"))
-        self.code = r.text.strip("\n")
+        lat = self.transformedPoints[0].y()
+        lon = self.transformedPoints[0].x()
+        code = self._request_hwt_code(lat, lon, "single object")
+        self.code = code if code else ""
         
      
     #call script and get altitude value (in-process to avoid QGIS GUI spawning in batch)
@@ -508,19 +582,24 @@ class DeclinationTool(QgsMapToolEmitPoint):
                     self.iface.messageBar().pushInfo("Clustering Method", f"Selected: {self.clustering_method_name}")
                     print(f"Clustering method set to: {self.clustering_method_name}")
     
-    def calculate_single_object_orientation(self, object_id, obj_points, obj_transformed, azimuth, progress=None):
-        """Calculate orientation and declination for a single object (classic flow, no clustering)."""
-        # Use first point as location for horizon request (same as single-object mode)
-        lat = obj_transformed[0].y()
-        lon = obj_transformed[0].x()
+    def _request_hwt_code(self, lat, lon, label, progress=None):
+        """
+        Request a HeyWhatsThat panorama code for a given location.
+        Uses a cache so the same coordinates (rounded to 4 decimals, matching the API)
+        always return the same panorama code, ensuring identical horizon data.
+        """
+        # Cache key: coordinates rounded to 4 decimals (same precision as the API URL)
+        cache_key = (round(lat, 4), round(lon, 4))
+        if not hasattr(self, '_hwt_code_cache'):
+            self._hwt_code_cache = {}
+        if cache_key in self._hwt_code_cache:
+            print(f"[HeyWhatsThat] Reusing cached code for ({cache_key[0]}, {cache_key[1]})")
+            return self._hwt_code_cache[cache_key]
         
-        QCoreApplication.processEvents()
-        if progress:
-            progress.setLabelText(f"Requesting horizon data for object {object_id + 1}...")
-            QCoreApplication.processEvents()
-        
+        # Use fixed name "Horizon1" (same as single-object mode) so the server
+        # is more likely to return the same panorama for the same coordinates.
         req = "http://heywhatsthat.com/bin/query.cgi?lat={0:.4f}&lon={1:.4f}&name={2}".format(
-            lat, lon, f"Object_{object_id}")
+            lat, lon, "Horizon1")
         
         r = None
         max_retries = 10
@@ -536,7 +615,7 @@ class DeclinationTool(QgsMapToolEmitPoint):
                 if r and r.text and r.text.strip():
                     break
             except requests.exceptions.RequestException as e:
-                print(f"Network error for object {object_id}: {e}")
+                print(f"Network error requesting HeyWhatsThat for {label}: {e}")
                 if i >= max_retries:
                     return None
             if i < max_retries:
@@ -552,19 +631,41 @@ class DeclinationTool(QgsMapToolEmitPoint):
         if code == "":
             return None
         
+        self._hwt_code_cache[cache_key] = code
+        print(f"[HeyWhatsThat] Got code '{code}' for {label} at ({cache_key[0]}, {cache_key[1]})")
+        return code
+
+    def calculate_single_object_orientation(self, object_id, obj_points, obj_transformed, azimuth, progress=None):
+        """Calculate orientation and declination for a single object.
+        Uses SRTM if configured, otherwise HeyWhatsThat."""
+        lat = obj_transformed[0].y()
+        lon = obj_transformed[0].x()
+        
         QCoreApplication.processEvents()
+        source = "SRTM" if self._use_srtm() else "HeyWhatsThat"
+        t_obj_start = time.time()
         if progress:
-            progress.setLabelText(f"Calculating altitude for object {object_id + 1}...")
+            progress.setLabelText(
+                "Computing horizon ({}) for object {}...".format(
+                    source, object_id + 1))
             QCoreApplication.processEvents()
         
-        script_path = os.path.join(self.scriptPath, "script.py")
-        if not os.path.exists(script_path):
-            return None
         try:
-            altitude = _run_horizon_script(script_path, code, azimuth)
+            horizon = self._compute_horizon_profile(
+                lat, lon,
+                label="object {}".format(object_id),
+                progress=progress)
+            altitude = self._altitude_from_profile(horizon, azimuth)
         except Exception as e:
-            print(f"Horizon script error for object {object_id}: {e}")
+            print("[A2i] ERROR — Horizon failed for object {} ({}) at "
+                  "lat={:.5f}, lon={:.5f}: {}".format(
+                      object_id, source, lat, lon, e))
             return None
+        
+        t_obj_elapsed = time.time() - t_obj_start
+        print("[A2i] Object {} horizon+altitude done ({}) in {:.1f}s — "
+              "az={:.2f}° alt={:.2f}°".format(
+                  object_id, source, t_obj_elapsed, azimuth, altitude))
         
         decl_point = QgsPointXY(lon, lat)
         decl = computeDeclination(altitude, azimuth, [decl_point])
@@ -589,7 +690,12 @@ class DeclinationTool(QgsMapToolEmitPoint):
             self.iface.messageBar().pushWarning("Warning", "No objects captured. Capture objects or import from CSV first.")
             return
         
-        self.iface.messageBar().pushMessage("Processing objects (no clustering)...", Qgis.Info, duration=2)
+        source = "SRTM" if self._use_srtm() else "HeyWhatsThat"
+        t_batch_start = time.time()
+        print("[A2i] ===== Starting batch processing (horizon source: {}) =====".format(source))
+        self.iface.messageBar().pushMessage(
+            "Processing objects — no clustering (horizon: {})...".format(source),
+            Qgis.Info, duration=2)
         QCoreApplication.processEvents()
         
         progress = QProgressDialog("Computing declinations for each object...", "Cancel", 0, 100, self.canvas)
@@ -635,12 +741,18 @@ class DeclinationTool(QgsMapToolEmitPoint):
         
         progress.setValue(100)
         progress.close()
+        t_batch_elapsed = time.time() - t_batch_start
         if not self.batch_results:
             self.iface.messageBar().pushWarning(
                 "No results",
-                "Horizon data failed for all objects. Try a different location or try again in a minute (HeyWhatsThat may be busy)."
+                "Horizon data ({}) failed for all objects.{}".format(
+                    source,
+                    " SRTM tiles may not cover this area — check Python Console."
+                    if source == "SRTM" else " Check console for details.")
             )
             return
+        print("[A2i] ===== Batch complete ({}) — {} objects in {:.1f}s =====".format(
+            source, len(self.batch_results), t_batch_elapsed))
         self.display_batch_results()
         if self.canvas:
             self.canvas.refresh()
@@ -667,32 +779,31 @@ class DeclinationTool(QgsMapToolEmitPoint):
         self.save_batch_results()
     
     def save_batch_results(self):
-        """Save batch (no clustering) results to CSV."""
+        """Save batch (no clustering) results to CSV (same format as clustering)."""
         if not self.batch_results:
             return
         global RESULTS_PATH
         if RESULTS_PATH == "Empty":
             RESULTS_PATH = os.getcwd()
         from qgis.PyQt.QtWidgets import QFileDialog
-        from qgis.PyQt import QtGui
-        logo_icon_path = ':/plugins/a2i/logo/icons/logo.png'
         filepath, _ = QFileDialog.getSaveFileName(
             None, "Save Batch Results", RESULTS_PATH, "Comma Separated Values Files (*.csv)")
         if not filepath:
             return
-        all_rows = [['object_id', 'latitude', 'longitude', 'azimuth', 'altitude', 'declination', 'stars', 'comments']]
+        all_rows = [CSV_HEADER]
         for r in self.batch_results:
             stars_str = ', '.join(r['stars']) if r['stars'] else 'None'
             all_rows.append([
-                r['object_id'], r['latitude'], r['longitude'], r['azimuth'],
-                r['altitude'], r['declination'], stars_str, f"Object {r['object_id']}"
+                r['object_id'], '', r['latitude'], r['longitude'], '', '',
+                r['azimuth'], r['altitude'], r['declination'], stars_str,
+                f"Object {r['object_id']}"
             ])
         try:
             with open(filepath, 'w', newline='', encoding='utf-8') as f:
                 csv.writer(f, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL).writerows(all_rows)
             self.iface.messageBar().pushSuccess("Saved", f"Saved {len(self.batch_results)} objects to {os.path.basename(filepath)}")
             print(f"Saved batch results to {filepath}")
-        except (IOError, Exception) as e:
+        except Exception as e:
             self.iface.messageBar().pushWarning("Save Error", str(e))
             print(f"Error saving batch results: {e}")
     
@@ -701,9 +812,11 @@ class DeclinationTool(QgsMapToolEmitPoint):
         Calculate orientation and declination for a cluster.
         
         Workflow:
-        1. Use the cluster's MEAN CENTROID to request ONE horizon profile from HeyWhatsThat.
-        2. For EACH OBJECT in the cluster, use the object's own azimuth to interpolate
-           altitude from that shared horizon profile, then compute declination individually.
+        1. Compute ONE horizon profile for the cluster's mean centroid
+           (uses SRTM if configured, otherwise HeyWhatsThat).
+        2. For EACH OBJECT in the cluster, interpolate altitude from
+           that shared horizon profile using the object's own azimuth,
+           then compute declination individually.
         
         Returns a dict with cluster-level info and a list of per-object results.
         """
@@ -712,75 +825,40 @@ class DeclinationTool(QgsMapToolEmitPoint):
         objects = cluster_info['objects']
         cluster_id = cluster_info['cluster_id']
         
+        source = "SRTM" if self._use_srtm() else "HeyWhatsThat"
+        t_cluster_start = time.time()
+        
         # --- Step 1: Get horizon profile for the cluster centroid ---
         
         QCoreApplication.processEvents()
         if progress:
-            progress.setLabelText(f"Requesting horizon data for cluster {cluster_id}...")
+            progress.setLabelText(
+                "Computing horizon ({}) for cluster {}...".format(
+                    source, cluster_id))
             QCoreApplication.processEvents()
         
-        # Request HeyWhatsThat panorama code using cluster mean centroid
-        req = "http://heywhatsthat.com/bin/query.cgi?lat={0:.4f}&lon={1:.4f}&name={2}".format(
-            centroid_lat, centroid_lon, f"Cluster_{cluster_id}")
-        
-        r = None
-        max_retries = 10
-        for i in range(max_retries + 1):
-            for _ in range(3):
-                QCoreApplication.processEvents()
-            if progress and progress.wasCanceled():
-                return None
-            try:
-                r = requests.get(req, timeout=3)
-                for _ in range(3):
-                    QCoreApplication.processEvents()
-                if r and r.text and r.text.strip():
-                    break
-            except requests.exceptions.RequestException as e:
-                print(f"Network error for cluster {cluster_id}: {e}")
-                for _ in range(3):
-                    QCoreApplication.processEvents()
-                if i >= max_retries:
-                    return None
-            if i < max_retries:
-                for wait_step in range(10):
-                    QCoreApplication.processEvents()
-                    if progress and progress.wasCanceled():
-                        return None
-                    time.sleep(0.1)
-        
-        if not r or not r.text or not r.text.strip():
-            return None
-        code = r.text.strip("\n")
-        if code == "":
-            return None
-        
-        # Download the FULL horizon data (once for the whole cluster)
-        QCoreApplication.processEvents()
-        if progress:
-            progress.setLabelText(f"Downloading horizon profile for cluster {cluster_id}...")
-            QCoreApplication.processEvents()
-        
-        script_path = os.path.join(self.scriptPath, "script.py")
-        if not os.path.exists(script_path):
-            return None
         try:
-            horizon_data = _download_horizon_data(script_path, code)
+            horizon_data = self._compute_horizon_profile(
+                centroid_lat, centroid_lon,
+                label="cluster {}".format(cluster_id),
+                progress=progress)
         except Exception as e:
-            print(f"Horizon download error for cluster {cluster_id}: {e}")
+            print("[A2i] ERROR — Horizon failed for cluster {} ({}) at "
+                  "lat={:.5f}, lon={:.5f}: {}".format(
+                      cluster_id, source, centroid_lat, centroid_lon, e))
             return None
         
         # --- Step 2: For each object, compute altitude + declination using its own azimuth ---
         
         QCoreApplication.processEvents()
         if progress:
-            progress.setLabelText(f"Computing declinations for cluster {cluster_id} objects...")
+            progress.setLabelText(
+                "Computing declinations for cluster {} objects...".format(
+                    cluster_id))
             QCoreApplication.processEvents()
         
         object_results = []
         for item in objects:
-            # item format: (global_index, centroid_data)
-            # centroid_data: (centroid_lat, centroid_lon, obj_points, obj_transformed, azimuth_or_none)
             global_idx, obj = item
             
             # Get object's own azimuth
@@ -797,9 +875,10 @@ class DeclinationTool(QgsMapToolEmitPoint):
             
             # Interpolate altitude at this object's azimuth from the cluster's horizon profile
             try:
-                altitude = _horizon_altitude(script_path, horizon_data, obj_az)
+                altitude = self._altitude_from_profile(horizon_data, obj_az)
             except Exception as e:
-                print(f"Altitude interpolation error for object {global_idx} in cluster {cluster_id}: {e}")
+                print("Altitude interpolation error for object {} in cluster {}: {}".format(
+                    global_idx, cluster_id, e))
                 continue
             
             # Compute declination using object's own azimuth, altitude, and latitude
@@ -813,7 +892,7 @@ class DeclinationTool(QgsMapToolEmitPoint):
                 stars.append(sunMoon)
             
             object_results.append({
-                'object_id': global_idx,  # Global object ID (unique across all clusters)
+                'object_id': global_idx,
                 'latitude': obj_lat,
                 'longitude': obj_lon,
                 'azimuth': obj_az,
@@ -825,12 +904,16 @@ class DeclinationTool(QgsMapToolEmitPoint):
         if not object_results:
             return None
         
+        t_cluster_elapsed = time.time() - t_cluster_start
+        print("[A2i] Cluster {} complete ({}) — {} objects in {:.1f}s".format(
+            cluster_id, source, len(object_results), t_cluster_elapsed))
+        
         return {
             'cluster_id': cluster_id,
             'centroid_lat': centroid_lat,
             'centroid_lon': centroid_lon,
             'num_objects': cluster_info['num_objects'],
-            'object_results': object_results,  # Per-object declinations
+            'object_results': object_results,
         }
     
     def process_all_clusters(self):
@@ -840,7 +923,12 @@ class DeclinationTool(QgsMapToolEmitPoint):
             return
         
         try:
-            self.iface.messageBar().pushMessage("Processing clusters...", Qgis.Info, duration=3)
+            source = "SRTM" if self._use_srtm() else "HeyWhatsThat"
+            t_all_start = time.time()
+            print("[A2i] ===== Starting cluster processing (horizon source: {}) =====".format(source))
+            self.iface.messageBar().pushMessage(
+                "Processing clusters (horizon: {})...".format(source),
+                Qgis.Info, duration=3)
             
             # Create progress dialog to keep UI responsive
             progress = QProgressDialog("Processing clusters...", "Cancel", 0, 100, self.canvas)
@@ -901,13 +989,29 @@ class DeclinationTool(QgsMapToolEmitPoint):
             progress.close()
             
             if not self.cluster_results:
+                source = "SRTM" if self._use_srtm() else "HeyWhatsThat"
+                if source == "SRTM":
+                    hint = (" — your SRTM tiles may not cover this area. "
+                            "Check Python Console for coordinates.")
+                else:
+                    hint = ""
                 self.iface.messageBar().pushWarning(
                     "No results",
-                    "Horizon data failed for all clusters. Try a different location or try again in a minute (HeyWhatsThat may be busy)."
+                    "Horizon data ({}) failed for all clusters{}".format(
+                        source, hint)
                 )
+                print("[A2i] HINT: Open Plugins > Python Console to see "
+                      "which coordinates failed and compare with your SRTM "
+                      "tile coverage.")
                 return
             
             # Display results
+            t_all_elapsed = time.time() - t_all_start
+            n_clusters = len(self.cluster_results)
+            n_objs = sum(len(cr['object_results']) for cr in self.cluster_results)
+            print("[A2i] ===== All clusters done ({}) — {} clusters, "
+                  "{} objects, total {:.1f}s =====".format(
+                      source, n_clusters, n_objs, t_all_elapsed))
             self.display_cluster_results()
             
             if self.canvas:
@@ -960,7 +1064,7 @@ class DeclinationTool(QgsMapToolEmitPoint):
         self.save_cluster_results()
     
     def save_cluster_results(self):
-        """Save per-object cluster results to a single CSV file."""
+        """Save per-object cluster results to CSV (same format as batch)."""
         if not self.cluster_results:
             return
         
@@ -971,20 +1075,13 @@ class DeclinationTool(QgsMapToolEmitPoint):
         from qgis.PyQt.QtWidgets import QFileDialog
         
         filepath, _ = QFileDialog.getSaveFileName(
-            None,
-            "Save Cluster Results",
-            RESULTS_PATH,
-            "Comma Separated Values Files (*.csv)"
-        )
+            None, "Save Cluster Results", RESULTS_PATH,
+            "Comma Separated Values Files (*.csv)")
         
         if not filepath:
-            return  # User cancelled
+            return
         
-        # Header: each row is one object, grouped under its cluster
-        all_rows = [['cluster_id', 'object_id', 'centroid_lat', 'centroid_lon',
-                     'object_lat', 'object_lon', 'azimuth', 'altitude',
-                     'declination', 'stars', 'comments']]
-        
+        all_rows = [CSV_HEADER]
         for cr in self.cluster_results:
             cluster_id = cr['cluster_id']
             centroid_lat = cr['centroid_lat']
@@ -992,24 +1089,17 @@ class DeclinationTool(QgsMapToolEmitPoint):
             for obj_r in cr['object_results']:
                 stars_str = ', '.join(obj_r['stars']) if obj_r['stars'] else 'None'
                 all_rows.append([
-                    cluster_id,
-                    obj_r['object_id'],
-                    centroid_lat,
-                    centroid_lon,
-                    obj_r['latitude'],
-                    obj_r['longitude'],
-                    obj_r['azimuth'],
-                    obj_r['altitude'],
-                    obj_r['declination'],
+                    obj_r['object_id'], cluster_id,
+                    obj_r['latitude'], obj_r['longitude'],
+                    centroid_lat, centroid_lon,
+                    obj_r['azimuth'], obj_r['altitude'], obj_r['declination'],
                     stars_str,
                     f'Cluster {cluster_id}, object {obj_r["object_id"]}'
                 ])
         
         try:
-            with open(filepath, 'w', newline='', encoding='utf-8') as file:
-                data_writer = csv.writer(file, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
-                data_writer.writerows(all_rows)
-            
+            with open(filepath, 'w', newline='', encoding='utf-8') as f:
+                csv.writer(f, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL).writerows(all_rows)
             total_objects = sum(len(cr['object_results']) for cr in self.cluster_results)
             num_clusters = len(self.cluster_results)
             self.iface.messageBar().pushSuccess("Saved",
@@ -1025,6 +1115,7 @@ class DeclinationTool(QgsMapToolEmitPoint):
         self.captured_objects = []
         self.cluster_results = []
         self.batch_results = []
+        self._hwt_code_cache = {}  # Clear HeyWhatsThat panorama cache
         self.clearMarkers()
         self.clearClusterLayers()
         self.pointList = []
@@ -1266,21 +1357,10 @@ class DeclinationTool(QgsMapToolEmitPoint):
 #Various functions
 def write_to_csv(self, scriptPath, xcoord, ycoord, azimuth, altitude, declination, stars):
     global RESULTS_PATH
-    if stars:
-        starsString = ', '.join(stars)
-    else:
-        starsString = ''
+    starsString = ', '.join(stars) if stars else 'None'
 
-    data = []
-    data.append(ycoord)
-    data.append(xcoord)
-    data.append(azimuth)
-    data.append(altitude)
-    data.append(declination)
-    data.append(starsString)
-
-    if (starsString == ''):
-        starsString = 'None'
+    # Data in unified format: object_id, cluster_id, lat, lon, centroid_lat, centroid_lon, az, alt, decl, stars
+    data = [0, '', ycoord, xcoord, '', '', azimuth, altitude, declination, starsString]
 
     messageString = "The bearing of the line is: Az: " + str(azimuth) + " Alt: " + str(altitude) + " Declination: " + str(declination) + " pointing to: " + starsString 
     print(messageString)

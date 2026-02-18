@@ -30,9 +30,14 @@ class Ui_Save(QtWidgets.QDialog):
 
     @pyqtSlot()
     def accept(self):
+        # Unified CSV header (same for single, batch, and clustering)
+        CSV_HEADER = ['object_id', 'cluster_id', 'latitude', 'longitude',
+                      'centroid_lat', 'centroid_lon', 'azimuth', 'altitude',
+                      'declination', 'stars', 'comments']
         comments = self.commentsLine.text()
         filepath = self.browseLine.text()
         if filepath:
+            row = list(self.data) + [comments]
             if self.createRadio.isChecked():
                 if path.exists(filepath):
                     error = QMessageBox()
@@ -44,10 +49,8 @@ class Ui_Save(QtWidgets.QDialog):
                 else:
                     with open(filepath, "w", newline='') as file:
                         data_writer = csv.writer(file, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
-
-                        data_writer.writerow(['latitude', 'longitude', 'azimuth', 'altitude', 'declination', 'stars', 'comments'])
-                        data_writer.writerow(
-                            [self.data[0], self.data[1], self.data[2], self.data[3], self.data[4], self.data[5], comments])
+                        data_writer.writerow(CSV_HEADER)
+                        data_writer.writerow(row)
             else:
                 if not path.exists(filepath):
                     error = QMessageBox()
@@ -59,9 +62,7 @@ class Ui_Save(QtWidgets.QDialog):
                 else:
                     with open(filepath, "a", newline='') as file:
                         data_writer = csv.writer(file, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
-
-                        data_writer.writerow(
-                            [self.data[0], self.data[1], self.data[2], self.data[3], self.data[4], self.data[5], comments])
+                        data_writer.writerow(row)
 
             self.close()
         else:

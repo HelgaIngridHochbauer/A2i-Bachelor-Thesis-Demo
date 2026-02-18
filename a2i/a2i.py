@@ -42,9 +42,9 @@ from .utility import *
 from .dialog import *
 from .save_data import *
 
-################################################
+
 # Global parameters                            #
-#################################################
+
 QGIS_CRS = "EPSG:3857" #canvas coordinates
 TARGET_CRS = "EPSG:4326" #coordinates of your map
 
@@ -61,6 +61,7 @@ class ArchaeoAstroInsight:
     MAP_TYPE = ''
     LINE_WIDTH = 1
     SCRIPT_SLEEP = ''
+    SRTM_PATH = ''
 
     def __init__(self, iface):
         """Constructor.
@@ -274,19 +275,7 @@ class ArchaeoAstroInsight:
 
     def run(self):
         """Run method that performs all the real work"""
-        # Create the dialog with elements (after translation) and keep reference
-        # Only create GUI ONCE in callback, so that it will only load when the plugin is started
-        #if self.first_start == True:
-        #    self.first_start = False
-        #    self.dlg = Ui_Dialog(self.plugin_dir) # plugin_dir was sent as backwards compatibility for the non-plugin version
-        # show the dialog
-        #self.dlg.show()
-        # Run the dialog event loop
-        #result = self.dlg.exec_()
-        # See if OK was pressed
-        #if result:
-            # Do something useful here - delete the line containing pass and
-            # substitute with your code.
+       
         global config_path 
         config_path = os.path.join(self.plugin_dir, "config.txt")
         global ui_path 
@@ -296,7 +285,7 @@ class ArchaeoAstroInsight:
 
         #Read config file
         with open(config_path, 'r') as f:
-            #SCRIPT_PATH = f.readline().rstrip("\n")
+            
             f.readline()
             RESULTS_PATH = f.readline().rstrip("\n")
             PYTHON_PATH = f.readline().rstrip("\n")
@@ -319,11 +308,14 @@ class ArchaeoAstroInsight:
             LINE_WIDTH = float(f.readline().rstrip("\n"))
             SCRIPT_SLEEP = float(f.readline().rstrip("\n"))
 
+            srtm_line = f.readline().rstrip("\n") if f.readable() else ""
+            SRTM_PATH = srtm_line if srtm_line and srtm_line != "Empty" else ""
+
         #Deal with map download and type
         if DOWNLOAD_MAP:
             service_url = MAP_TYPE
             service_uri = "type=xyz&zmin=0&zmax=21&url=https://"+requests.utils.quote(service_url)
-            #print ("YES!")
+            
 
             if QgsProject.instance().mapLayersByName("Google Sat"):
                 print("Google image is already loaded!")
@@ -332,7 +324,7 @@ class ArchaeoAstroInsight:
 
         #Initialize the tool
         global canvas_clicked
-        canvas_clicked = DeclinationTool(self.iface.mapCanvas(), self.iface, self.plugin_dir, RESULTS_PATH, PYTHON_PATH, SCRIPT_SLEEP, LINE_WIDTH, DOWNLOAD_MAP)
+        canvas_clicked = DeclinationTool(self.iface.mapCanvas(), self.iface, self.plugin_dir, RESULTS_PATH, PYTHON_PATH, SCRIPT_SLEEP, LINE_WIDTH, DOWNLOAD_MAP, SRTM_PATH)
         
         # Store reference to tool for batch mode functions
         if not hasattr(self, 'declination_tool'):
@@ -476,6 +468,7 @@ class ArchaeoAstroInsight:
         global MAP_TYPE
         global LINE_WIDTH
         global SCRIPT_SLEEP
+        global SRTM_PATH
 
         if (self.first_start == True):
             self.first_start = False
@@ -519,6 +512,15 @@ class ArchaeoAstroInsight:
 
             LINE_WIDTH = float(f.readline().rstrip("\n"))
             SCRIPT_SLEEP = float(f.readline().rstrip("\n"))
+
+            srtm_line = f.readline().rstrip("\n") if f.readable() else ""
+            SRTM_PATH = srtm_line if srtm_line and srtm_line != "Empty" else ""
+
+        # Push updated SRTM path into the live tool instance
+        if hasattr(self, 'declination_tool') and self.declination_tool is not None:
+            self.declination_tool.srtmPath = SRTM_PATH
+            source = "SRTM" if SRTM_PATH else "HeyWhatsThat"
+            print("[A2i] Settings updated — horizon source: {}".format(source))
 
         if change:
             self.rmvLyr("Google Sat")

@@ -35,6 +35,12 @@ class Ui_Dialog(QtWidgets.QDialog, FORM_CLASS1):
 
             self.sleepLine.setText(f.readline().rstrip("\n"))
 
+            srtm_line = f.readline().rstrip("\n") if f.readable() else ""
+            if srtm_line and srtm_line != "Empty":
+                self.srtmLine.setText(srtm_line)
+            else:
+                self.srtmLine.setText("")
+
 
     @pyqtSlot( )
     def resultsSlot( self ):
@@ -49,6 +55,17 @@ class Ui_Dialog(QtWidgets.QDialog, FORM_CLASS1):
         dir_path = QFileDialog.getExistingDirectory(self, "Choose Directory", home)
 
         self.pythonLine.setText(dir_path)
+
+    @pyqtSlot()
+    def srtmSlot(self):
+        home = self.srtmLine.text() if self.srtmLine.text() else self.path
+        dir_path = QFileDialog.getExistingDirectory(self, "Choose SRTM Data Folder", home)
+        if dir_path:
+            self.srtmLine.setText(dir_path)
+
+    @pyqtSlot()
+    def srtmClearSlot(self):
+        self.srtmLine.setText("")
 
     @pyqtSlot()
     def stateChangedSlot(self):
@@ -106,5 +123,12 @@ class Ui_Dialog(QtWidgets.QDialog, FORM_CLASS1):
                 f.write(self.sleepLine.text())
             else:
                 f.write(str(2))
+
+            f.write('\n')
+
+            if self.srtmLine.text():
+                f.write(self.srtmLine.text())
+            else:
+                f.write("Empty")
 
         self.close()

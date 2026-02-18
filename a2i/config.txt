@@ -5,3 +5,4 @@ Yes
 Satellite
 0.7
 4
+C:/Users/helga/Downloads/strm

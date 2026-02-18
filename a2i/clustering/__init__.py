@@ -12,6 +12,7 @@ from .dbscan_clustering import DBSCANClustering
 from .kmeans_clustering import KMeansClustering
 from .aglomerative_clustering import AglomerativeClustering
 from .grid_clustering import GridClustering
+from .barnes_hut_clustering import BarnesHutClustering
 
 # Register all available clustering methods
 AVAILABLE_METHODS = {
@@ -19,6 +20,7 @@ AVAILABLE_METHODS = {
     'kmeans': KMeansClustering,
     'aglomerative': AglomerativeClustering,
     'grid': GridClustering,
+    'barnes_hut': BarnesHutClustering,
 }
 
 def get_clustering_method(method_name):
