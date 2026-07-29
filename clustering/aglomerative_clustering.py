@@ -21,7 +21,7 @@ class AglomerativeClustering(BaseClusteringMethod):
         self.name = "Agglomerative"
         self.description = "Agglomerative (Hierarchical) clustering (requires sklearn)"
     
-    def cluster(self, object_centroids, distance_threshold=100.0):
+    def cluster(self, object_centroids, distance_threshold=100.0, **kwargs):
         """
         Cluster objects using Agglomerative clustering algorithm.
         

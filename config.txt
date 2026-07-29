@@ -1,5 +1,5 @@
 C:\Users/helga/AppData/Roaming/QGIS/QGIS3\profiles\default/python/plugins\a2i
-C:/Users/fmarc/OneDrive/Documents/srpac/a2i/Archaeo-Astro Insight/results
+C:\Users\helga\Desktop\Experimente_Clustering\results
 python
 Yes
 Satellite

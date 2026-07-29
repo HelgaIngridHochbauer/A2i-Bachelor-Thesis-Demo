@@ -22,7 +22,7 @@ class KMeansClustering(BaseClusteringMethod):
         self.name = "K-means"
         self.description = "K-means clustering (requires sklearn)"
     
-    def cluster(self, object_centroids, distance_threshold=100.0):
+    def cluster(self, object_centroids, distance_threshold=100.0, **kwargs):
         """
         Cluster objects using K-means algorithm.
         

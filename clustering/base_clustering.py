@@ -20,7 +20,7 @@ class BaseClusteringMethod:
         self.name = "Base Method"
         self.description = "Base clustering method (not implemented)"
     
-    def cluster(self, object_centroids, distance_threshold=100.0):
+    def cluster(self, object_centroids, distance_threshold=100.0, **kwargs):
         """
         Cluster objects based on their centroids.
         

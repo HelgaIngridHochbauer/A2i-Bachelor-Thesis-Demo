@@ -22,7 +22,7 @@ class DBSCANClustering(BaseClusteringMethod):
         self.name = "DBSCAN"
         self.description = "Density-Based Spatial Clustering (requires sklearn)"
     
-    def cluster(self, object_centroids, distance_threshold=100.0):
+    def cluster(self, object_centroids, distance_threshold=100.0, **kwargs):
         """
         Cluster objects using DBSCAN algorithm.
         

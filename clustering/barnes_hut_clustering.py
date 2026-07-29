@@ -37,10 +37,9 @@ except ImportError:
     QCoreApplication = None
 
 
-# ---------------------------------------------------------------------------
-# Data structures — kept from the original Barnes-Hut implementation
-# ---------------------------------------------------------------------------
-
+#---------------------------------------------------------------------------
+# Data structures
+#--------------------------------------------------------------------------
 class Tomb:
     """Represents a single archaeological object (tomb / megalithic structure)."""
 
@@ -108,9 +107,9 @@ class Node:
                 self.max_z = max(z_max_list)
 
 
-# ---------------------------------------------------------------------------
-# Quadtree construction — kept from the original implementation
-# ---------------------------------------------------------------------------
+#---------------------------------------------------------------------------
+# Quadtree construction
+#--------------------------------------------------------------------------
 
 def build_quadtree(tombs, center, size):
     """Recursively build the quadtree.  Subdivision stops when a node
@@ -185,16 +184,18 @@ class BarnesHutClustering(BaseClusteringMethod):
     # elevation range exceeds this value are split further.
     DEFAULT_EPSILON = 20.0
 
-    def __init__(self):
+    def __init__(self, use_silhouette=True):
         super().__init__()
         self.name = "Barnes-Hut"
         self.description = "Adaptive Barnes-Hut spatial clustering with optional topographic check"
+        self.use_silhouette = use_silhouette
 
     # -----------------------------------------------------------------
-    # Public interface  (BaseClusteringMethod contract)
+    # Public interface
     # -----------------------------------------------------------------
 
-    def cluster(self, object_centroids, distance_threshold=100.0):
+    def cluster(self, object_centroids, distance_threshold=100.0,
+                use_silhouette=None):
         """
         Cluster objects using the adapted Barnes-Hut algorithm.
 
@@ -206,6 +207,8 @@ class BarnesHutClustering(BaseClusteringMethod):
                 - obj_transformed: Transformed points (EPSG:4326)
                 - azimuth_or_none: Optional azimuth value
             distance_threshold: Distance threshold in metres (default 100 m)
+            use_silhouette: Enable/disable the silhouette quality gate.
+                If None (default), falls back to ``self.use_silhouette``.
 
         Returns:
             labels: List of integers, one per object, indicating cluster
@@ -230,7 +233,7 @@ class BarnesHutClustering(BaseClusteringMethod):
         if QCoreApplication:
             QCoreApplication.processEvents()
 
-        # --- 1. Sample elevations (DEM or zeros) --------------------------
+        # Sample elevations (DEM or zeros)
         elevations = self._sample_elevations(object_centroids)
         has_elevation = any(e != 0.0 for e in elevations)
         if has_elevation:
@@ -238,13 +241,13 @@ class BarnesHutClustering(BaseClusteringMethod):
         else:
             print("Barnes-Hut: No DEM raster found — topographic check SKIPPED (purely spatial)")
 
-        # --- 2. Create Tomb objects ----------------------------------------
+        # Create Tomb objects
         tombs = []
         for idx, centroid in enumerate(object_centroids):
             lat, lon = centroid[0], centroid[1]
             tombs.append(Tomb(id=idx, lat=lat, lon=lon, elevation=elevations[idx]))
 
-        # --- 3. Build quadtree ---------------------------------------------
+        # Build quadtree
         all_pos = np.array([t.pos for t in tombs])
         min_coords = np.min(all_pos, axis=0)
         max_coords = np.max(all_pos, axis=0)
@@ -253,14 +256,14 @@ class BarnesHutClustering(BaseClusteringMethod):
 
         root = build_quadtree(tombs, center, size)
 
-        # --- 4. Compute bottom-up statistics --------------------------------
+        # Compute bottom-up statistics
         root.compute_statistics()
 
         # Process events after tree construction
         if QCoreApplication:
             QCoreApplication.processEvents()
 
-        # --- 5. Top-down traversal → assign cluster labels -----------------
+        # Top-down traversal → assign cluster labels
         # epsilon is only meaningful when we have real elevation data;
         # otherwise set it to infinity so the check always passes.
         epsilon = self.DEFAULT_EPSILON if has_elevation else float('inf')
@@ -291,9 +294,10 @@ class BarnesHutClustering(BaseClusteringMethod):
         unique_count = len(set(labels))
         print(f"Barnes-Hut: Initial traversal found {unique_count} cluster(s) from {n} objects")
 
-        # --- 6. Silhouette quality gate ------------------------------------
+        # Silhouette quality gate
+        silhouette_enabled = use_silhouette if use_silhouette is not None else self.use_silhouette
         K = len(set(labels))
-        if K >= 2 and n > 2:
+        if silhouette_enabled and K >= 2 and n > 2:
             coords = np.array([(c[0], c[1]) for c in object_centroids])
             spread_deg = float(np.max(np.ptp(coords, axis=0)))
 
@@ -302,6 +306,8 @@ class BarnesHutClustering(BaseClusteringMethod):
 
             if not passed:
                 labels = self._merge_nearby_clusters(coords, labels, threshold_deg)
+        elif not silhouette_enabled:
+            print("Barnes-Hut: Silhouette quality gate DISABLED")
 
         if QCoreApplication:
             QCoreApplication.processEvents()
@@ -312,7 +318,7 @@ class BarnesHutClustering(BaseClusteringMethod):
         return labels
 
     # -----------------------------------------------------------------
-    # Core traversal — replaces solve_dataset / run_heavy_script
+    # Core traversal 
     # -----------------------------------------------------------------
 
     def _assign_labels(self, node, labels, current_label, size_threshold, epsilon):
@@ -323,20 +329,20 @@ class BarnesHutClustering(BaseClusteringMethod):
 
         Decision logic (mirrors the original Barnes-Hut solve):
 
-        * **Leaf node** — assign current label to each tomb in the leaf,
+        * Leaf node — assign current label to each tomb in the leaf,
           then increment.
-        * **Node passes BOTH checks** (small enough + flat enough) — assign
+        * Node passes BOTH checks (small enough + flat enough) — assign
           the same label to ALL tombs under this node (cluster success).
-        * **Node fails either check** — recurse into children
+        * Node fails either check — recurse into children
           (cluster failure, dig deeper).
         """
         if node.count == 0:
             return current_label
 
-        # ----- Check 1: Spatial — is the node small enough? -----
+        # Check 1: Spatial — is the node small enough?
         is_small_enough = node.size <= size_threshold
 
-        # ----- Check 2: Topographic — is the terrain flat enough? -----
+        # Check 2: Topographic — is the terrain flat enough?
         elevation_diff = node.max_z - node.min_z
         is_flat_enough = elevation_diff < epsilon
 

@@ -28,19 +28,17 @@ def aggregate_horizon_profile(input_file, az_bin_size=0.1):
     For each azimuth bin (floor to *az_bin_size* degrees) we keep the
     **maximum** dip angle -- that is the visible horizon at that bearing.
 
-    Parameters
-    ----------
-    input_file : str
-        Path to the C++ output file.
-    az_bin_size : float
-        Azimuth bin width in degrees (default 0.1, matching the R script's
-        ``as.integer(azimuth*10)/10``).
+    Parameters:
+        input_file : str
+            Path to the C++ output file.
+        az_bin_size : float
+            Azimuth bin width in degrees (default 0.1, matching the R script's
+            ``as.integer(azimuth*10)/10``).
 
-    Returns
-    -------
-    list[dict]
-        ``[{'az': float, 'alt': float}, ...]`` sorted by azimuth, ready for
-        ``interpolate_altitude()`` or the existing ``hor2alt()`` logic.
+    Returns:
+        list[dict]
+            ``[{'az': float, 'alt': float}, ...]`` sorted by azimuth, ready for
+            ``interpolate_altitude()`` or the existing ``hor2alt()`` logic.
     """
     azimuths = []
     dips = []
@@ -105,18 +103,15 @@ def interpolate_altitude(horizon_data, target_azimuth):
     profile.  Uses the same circular-wrapping linear interpolation as
     ``hor2alt()`` in ``script.py``.
 
-    Parameters
-    ----------
-    horizon_data : list[dict]
-        Output of ``aggregate_horizon_profile()``.
-    target_azimuth : float
-        Azimuth in degrees (0-360).
+    Parameters:
+        horizon_data : list[dict]
+            Output of ``aggregate_horizon_profile()``.
+        target_azimuth : float
+            Azimuth in degrees (0-360).
 
-    Returns
-    -------
-    float
-        Interpolated altitude (horizon dip angle) in degrees, rounded to
-        2 decimals.
+    Returns: 
+        float
+            Interpolated altitude (horizon dip angle) in degrees, rounded to 2 decimals.
     """
     az_values = [d['az'] for d in horizon_data]
     alt_values = [d['alt'] for d in horizon_data]

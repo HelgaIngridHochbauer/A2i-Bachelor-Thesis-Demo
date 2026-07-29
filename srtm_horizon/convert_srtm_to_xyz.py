@@ -72,29 +72,28 @@ def convert_srtm_to_xyz(latitude, longitude, srtm_folder, output_file,
     ``long_lat_elev_surrounding_area.txt`` that the C++ horizon calculator
     expects as input.
 
-    Parameters
-    ----------
-    latitude : float
-        Observer latitude (decimal degrees, EPSG:4326).
-    longitude : float
-        Observer longitude (decimal degrees, EPSG:4326).
-    srtm_folder : str
-        Path to the folder containing SRTM raster tiles.
-    output_file : str
-        Path where the output text file will be written.
-    del_angle : float
-        Half-size of the bounding box in degrees (default 1.5 ≈ 167 km).
-        Must be large enough to capture distant terrain that defines
-        the horizon (HeyWhatsThat uses ~200 km).
-    max_points : int
-        Maximum number of terrain points to write. If the window contains
-        more pixels than this, the data is subsampled evenly to keep the
-        C++ horizon calculator running in a reasonable time (default 25000).
+    Parameters:
+        latitude : float
+            Observer latitude (decimal degrees, EPSG:4326).
+        longitude : float
+            Observer longitude (decimal degrees, EPSG:4326).
+        srtm_folder : str
+            Path to the folder containing SRTM raster tiles.
+        output_file : str
+            Path where the output text file will be written.
+        del_angle : float
+            Half-size of the bounding box in degrees (default 1.5 ≈ 167 km).
+            Must be large enough to capture distant terrain that defines
+            the horizon (HeyWhatsThat uses ~200 km).
+        max_points : int
+            Maximum number of terrain points to write. If the window contains
+            more pixels than this, the data is subsampled evenly to keep the
+            C++ horizon calculator running in a reasonable time (default 25000).
 
-    Returns
-    -------
-    float
-        Elevation (metres) at the grid point closest to the observer.
+
+    Returns: 
+        float
+            Elevation (metres) at the grid point closest to the observer.
     """
     from osgeo import gdal
     gdal.UseExceptions()

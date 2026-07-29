@@ -7,13 +7,13 @@ name=ArchaeoAstroInsight
 qgisMinimumVersion=3.18
 description=This plugin enables users to perform archaeoastronomy studies by computing the azimuth and horizon altitude indicated by a specific bearing (line).
 version=0.1.0
-author=Marc Frincu, Roxana Ionescu
+author=Marc Frincu, Roxana Ionescu, Hochbauer Helga
 email=frincu.marc@gmail.com
 
 about=This plugin enables users to perform archaeoastronomy studies by computing the azimuth and horizon altitude indicated by a specific bearing (line).
 
-tracker=http://bugs
-repository=http://repo
+tracker=https://gitlab.dev.info.uvt.ro/didactic/2026/licenta/ie/licentahelgahochbauer2026/-/issues
+repository=https://gitlab.dev.info.uvt.ro/didactic/2026/licenta/ie/licentahelgahochbauer2026.git
 # End of mandatory metadata
 
 # Recommended items:
@@ -25,7 +25,7 @@ hasProcessingProvider=no
 # Tags are comma separated with spaces allowed
 tags=python, science
 
-homepage=https://github.com/marcfrincu/ArchaeoAstroInsight/
+homepage=https://gitlab.dev.info.uvt.ro/didactic/2026/licenta/ie/licentahelgahochbauer2026
 category=Plugins
 icon=icon.png
 # experimental flag

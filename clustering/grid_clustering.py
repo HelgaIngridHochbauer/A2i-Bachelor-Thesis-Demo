@@ -22,7 +22,7 @@ class GridClustering(BaseClusteringMethod):
         self.name = "Grid"
         self.description = "Grid-based clustering with CLIQUE (requires pyclustering)"
     
-    def cluster(self, object_centroids, distance_threshold=100.0):
+    def cluster(self, object_centroids, distance_threshold=100.0, **kwargs):
         """
         Cluster objects using grid-based CLIQUE algorithm.
         

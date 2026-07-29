@@ -24,13 +24,10 @@
 """
 
 
-# noinspection PyPep8Naming
+
 def classFactory(iface):  # pylint: disable=invalid-name
     """Load ArchaeoAstroInsight class from file ArchaeoAstroInsight.
 
-    :param iface: A QGIS interface instance.
-    :type iface: QgsInterface
     """
-    #
     from .a2i import ArchaeoAstroInsight
     return ArchaeoAstroInsight(iface)

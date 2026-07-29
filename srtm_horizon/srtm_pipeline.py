@@ -1,7 +1,7 @@
 """
-High-level SRTM horizon pipeline.
+High-level SRTM horizon computation pipeline.
 
-Orchestrates the three stages:
+Coordinates the three stages:
     1. convert_srtm_to_xyz  – extract lon/lat/elev from SRTM raster tiles
     2. C++ horizon calculator – compute azimuth / dip-angle / distance
     3. aggregate_horizon     – bin and aggregate into a horizon profile
@@ -51,34 +51,33 @@ def compute_srtm_horizon(latitude, longitude, srtm_folder, plugin_dir,
     """
     Run the full SRTM-based horizon pipeline for a given observer location.
 
-    Parameters
-    ----------
-    latitude, longitude : float
-        Observer position in decimal degrees (EPSG:4326).
-    srtm_folder : str
-        Path to the folder containing SRTM raster tiles.
-    plugin_dir : str
-        Path to the a2i plugin directory (used to find the C++ executable).
-    target_azimuth : float
-        If >= 0, only compute terrain along this azimuth (speed optimisation).
-        Use -1 (default) for a full 360-degree profile.
-    on_waiting : callable or None
-        Optional ``callback(message)`` for progress feedback.
+    Parameters:
 
-    Returns
-    -------
-    dict
-        ``{'data': [{'az': float, 'alt': float}, ...],
-           'metadata': {'source': 'SRTM', 'elevation': float}}``
-        Compatible with the HeyWhatsThat ``hor`` dict consumed by the rest
-        of the plugin.
+        latitude, longitude : float
+            Observer position in decimal degrees (EPSG:4326).
+        srtm_folder : str
+            Path to the folder containing SRTM raster tiles.
+        plugin_dir : str
+            Path to the a2i plugin directory (used to find the C++ executable).
+        target_azimuth : float
+            If >= 0, only compute terrain along this azimuth (speed optimisation).
+            Use -1 (default) for a full 360-degree profile.
+        on_waiting : callable or None
+            Optional ``callback(message)`` for progress feedback.
+
+    Returns:
+        dict
+            ``{'data': [{'az': float, 'alt': float}, ...],
+            'metadata': {'source': 'SRTM', 'elevation': float}}``
+            Compatible with the HeyWhatsThat ``hor`` dict consumed by the rest
+            of the plugin.
     """
     pipeline_start = time.time()
     print("[SRTM] ===== Starting SRTM horizon pipeline =====")
     print("[SRTM] Observer: ({:.5f}, {:.5f})".format(latitude, longitude))
     print("[SRTM] SRTM folder: {}".format(srtm_folder))
 
-    # --- Locate the compiled C++ executable ---
+    #  Locate the compiled C++ executable
     cpp_exe = _find_cpp_executable(plugin_dir)
     if cpp_exe is None:
         raise FileNotFoundError(
@@ -88,7 +87,7 @@ def compute_srtm_horizon(latitude, longitude, srtm_folder, plugin_dir,
         )
     print("[SRTM] C++ executable: {}".format(cpp_exe))
 
-    # --- Stage 1: SRTM raster → XYZ text file ---
+    # Stage 1: SRTM raster → XYZ text file
     if on_waiting:
         on_waiting("[SRTM] Stage 1/3: Extracting elevation data from SRTM tiles...")
     t1 = time.time()
@@ -111,7 +110,7 @@ def compute_srtm_horizon(latitude, longitude, srtm_folder, plugin_dir,
               t1_elapsed, observer_ground_elev, _OBSERVER_HEIGHT,
               observer_elev, xyz_size / 1048576.0))
 
-    # --- Stage 2: Run C++ horizon calculator ---
+    # Stage 2: Run C++ horizon calculator
     if on_waiting:
         on_waiting("[SRTM] Stage 2/3: Computing horizon topography (C++)...")
     t2 = time.time()
@@ -163,7 +162,7 @@ def compute_srtm_horizon(latitude, longitude, srtm_folder, plugin_dir,
     print("[SRTM] Stage 2 done in {:.1f}s — C++ output: {:.1f} MB".format(
         t2_elapsed, cpp_size / 1048576.0))
 
-    # --- Stage 3: Aggregate C++ output into horizon profile ---
+    # Stage 3: Aggregate C++ output into horizon profile 
     if on_waiting:
         on_waiting("[SRTM] Stage 3/3: Aggregating horizon profile...")
     t3 = time.time()
@@ -201,17 +200,15 @@ def srtm_hor2alt(hor, azimuth):
 
     Drop-in replacement for ``script.hor2alt()``.
 
-    Parameters
-    ----------
-    hor : dict
-        Horizon dict returned by ``compute_srtm_horizon()``.
-    azimuth : float
-        Azimuth in degrees (0-360).
+    Parameters:
+        hor : dict
+            Horizon dict returned by ``compute_srtm_horizon()``.
+        azimuth : float
+            Azimuth in degrees (0-360).
 
-    Returns
-    -------
-    float
-        Altitude (dip angle) in degrees, rounded to 2 decimals.
+    Returns:
+        float
+            Altitude (dip angle) in degrees, rounded to 2 decimals.
     """
     return interpolate_altitude(hor['data'], azimuth)
 

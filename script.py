@@ -279,7 +279,6 @@ def hor2alt(hor, az):
 
 def main():
     """Main function to process command line arguments and output result"""
-    #print("now running script.py (no need for R)")
     if len(sys.argv) < 3:
         print("Usage: script.py <HWTID> <azimuth>", file=sys.stderr)
         sys.exit(1)

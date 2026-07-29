@@ -1,7 +1,3 @@
-SCRIPT_PATH = "C:\\"
-#Archaeo-Astro Insight#
-
-
 # Global parameters                            
 
 QGIS_CRS = "EPSG:3857" #canvas coordinates
@@ -22,8 +18,6 @@ CSV_HEADER = ['object_id', 'cluster_id', 'latitude', 'longitude',
               'declination', 'stars', 'processing_time', 'total_processing_time',
               'comments']
 
-#################################################
-#sys.path.append(SCRIPT_PATH)
 from .resources import *
 import requests
 import time
@@ -156,6 +150,7 @@ class DeclinationTool(QgsMapToolEmitPoint):
         self.batch_results = []  # Store batch (no clustering) calculation results
         self.cluster_layers = []  # List of QgsVectorLayer for cluster visualizations (not used anymore, kept for compatibility)
         self.clustering_method_name = 'dbscan'  # Default clustering method
+        self.use_silhouette = True  # Silhouette quality gate for Barnes-Hut
         
         global RESULTS_PATH 
         RESULTS_PATH = resultsPath
@@ -254,8 +249,6 @@ class DeclinationTool(QgsMapToolEmitPoint):
         else:
             print('Point 2: ({:.4f}, {:.4f})'.format(transformed_point[1], transformed_point[0]))
 
-        #print(point)
-        #print(transformed_point)
         if len(self.pointList) == 2:
             self.drawLine()
             self.az = computeAzimuth(self.pointList)
@@ -359,10 +352,6 @@ class DeclinationTool(QgsMapToolEmitPoint):
         QgsProject.instance().addMapLayers([line_layer])
 
             
-            #gLine = QgsGeometry.fromPolyline([QgsPoint(self.pointList[0].x(),self.pointList[0].y()), QgsPoint(self.pointList[1].x(),self.pointList[1].y())])
-            #self.rubberBand.setToGeometry(gLine, None)
-            #print(self.pointList)
-    
     #send request for HeyWhatsThat.com code
     def handleRequest(self):
         self.iface.messageBar().pushMessage("Sending HTTP request to [HeyWhatsThat.com]. Please wait for the response.....", Qgis.Info, 2)
@@ -479,7 +468,11 @@ class DeclinationTool(QgsMapToolEmitPoint):
         
         try:
             clustering_method = get_clustering_method(self.clustering_method_name)
-            labels = clustering_method.cluster(object_centroids, distance_threshold=distance_threshold)
+            labels = clustering_method.cluster(
+                object_centroids,
+                distance_threshold=distance_threshold,
+                use_silhouette=self.use_silhouette,
+            )
         except Exception as e:
             print(f"Error in clustering method '{self.clustering_method_name}': {e}")
             self.iface.messageBar().pushWarning("Warning", f"Clustering failed: {e}")
@@ -1540,168 +1533,3 @@ def write_to_csv(self, scriptPath, xcoord, ycoord, azimuth, altitude, declinatio
     save = Ui_Save(data, RESULTS_PATH, os.path.join(scriptPath, "save_data.ui"))
     save.setWindowIcon(QtGui.QIcon(':/plugins/a2i/logo/icons/logo.png'))
     save.exec()
-    
-def zoom_to_coords():
-    qid = QInputDialog()
-    qid.setWindowIcon(QtGui.QIcon(logo_icon_path))
-    canvas = iface.mapCanvas()
-    input, ok = QInputDialog.getText( qid, "Enter Coordinates", "Enter New Coordinates as 'x.xxx, y.yyy'", QLineEdit.Normal, "lat" + "," + "long")
-    if ok:
-        y = input.split( "," )[ 0 ]
-        #print (y)
-        x = input.split( "," )[ 1 ]
-        #print (x)
-        while (y == "lat" or x == "long") and ok:
-            input, ok = QInputDialog.getText( qid, "Enter Coordinates", "Enter New Coordinates as 'x.xxx,y.yyy'", QLineEdit.Normal, "lat" + "," + "long")
-            if ok:
-                y = input.split( "," )[ 0 ]
-                x = input.split( "," )[ 1 ]
-        if ok:
-            point = QgsPointXY(float(x), float(y))
-            tr = QgsCoordinateTransform(QgsCoordinateReferenceSystem(QGIS_CRS), QgsCoordinateReferenceSystem(TARGET_CRS), QgsProject.instance())
-            transformed_point = tr.transform(point, QgsCoordinateTransform.ReverseTransform)
-            x = transformed_point.x()
-            y = transformed_point.y()
-            if not x:
-                print ("x value is missing!")
-            if not y:
-                print ("y value is missing!")
-            scale=200
-            #print(x)
-            #print(y)
-            rect = QgsRectangle(x-scale,y-scale,x+scale,y+scale)
-            canvas.setExtent(rect)
-            canvas.refresh()
-
-def azimuth_tool():
-    iface.mapCanvas().setMapTool( canvas_clicked )
-
-def rmvLyr(lyrname):
-    qinst = QgsProject.instance()
-    layers = qinst.mapLayersByName(lyrname)
-    if layers:
-        qinst.removeMapLayer(layers[0].id())
-
-def set_params():
-
-    change = False
-
-    ui = Ui_Dialog(SCRIPT_PATH)
-    ui.setWindowIcon(QtGui.QIcon(logo_icon_path))
-    ui.exec()
-
-    with open(config_path, 'r') as f:
-        #SCRIPT_PATH = f.readline().rstrip("\n")
-        f.readline()
-        RESULTS_PATH = f.readline().rstrip("\n")
-        PYTHON_PATH = f.readline().rstrip("\n")
-
-        if f.readline().rstrip("\n") == "Yes":
-            DOWNLOAD_MAP = True
-            mapType = f.readline().rstrip("\n")
-            
-            if mapType == "Roadmap":
-                if MAP_TYPE != "mt1.google.com/vt/lyrs=m&hl=en&x={x}&y={y}&z={z}":
-                    change = True
-                MAP_TYPE = "mt1.google.com/vt/lyrs=m&hl=en&x={x}&y={y}&z={z}"
-            elif mapType == "Terrain":
-                if MAP_TYPE != "mt1.google.com/vt/lyrs=p&hl=en&x={x}&y={y}&z={z}":
-                    change = True
-                MAP_TYPE = "mt1.google.com/vt/lyrs=p&hl=en&x={x}&y={y}&z={z}"
-            elif mapType == "Satellite":
-                if MAP_TYPE != "mt1.google.com/vt/lyrs=s&hl=en&x={x}&y={y}&z={z}":
-                    change = True
-                MAP_TYPE = "mt1.google.com/vt/lyrs=s&hl=en&x={x}&y={y}&z={z}"
-            elif mapType == "Hybrid":
-                if MAP_TYPE != "mt1.google.com/vt/lyrs=y&hl=en&x={x}&y={y}&z={z}":
-                    change = True
-                MAP_TYPE = "mt1.google.com/vt/lyrs=y&hl=en&x={x}&y={y}&z={z}"
-            else:
-                DOWNLOAD_MAP = False
-                f.readline()
-
-        LINE_WIDTH = float(f.readline().rstrip("\n"))
-        SCRIPT_SLEEP = float(f.readline().rstrip("\n"))
-
-    if change:
-        rmvLyr("Google Sat")
-        service_url = MAP_TYPE
-        service_uri = "type=xyz&zmin=0&zmax=21&url=https://"+requests.utils.quote(service_url)
-        iface.addRasterLayer(service_uri, "Google Sat", "wms")
-
-
-#'Main' code, executed first when you run the script
-def initA2i(scriptPath, iface):
-    #Print empty line between console ouputs
-    print('\n')
-    SCRIPT_PATH = scriptPath
-
-    #Set paths to useful files
-    config_path = os.path.join(SCRIPT_PATH, "config.txt")
-    ui_path = os.path.join(SCRIPT_PATH, "dialog.ui")
-    save_path = os.path.join(SCRIPT_PATH, "save_data.ui")
-    tool_icon_path = ':/plugins/a2i/toolbar/icons/bearing.png'
-    location_icon_path = ':/plugins/a2i/toolbar/icons/location.png'
-    params_icon_path = ':/plugins/a2i/toolbar/icons/settings.png'
-    logo_icon_path = ':/plugins/a2i/logo/icons/logo.png'
-
-    #Read config file
-    with open(config_path, 'r') as f:
-        #SCRIPT_PATH = f.readline().rstrip("\n")
-        f.readline()
-        RESULTS_PATH = f.readline().rstrip("\n")
-        PYTHON_PATH = f.readline().rstrip("\n")
-
-        if f.readline().rstrip("\n") == "Yes":
-            DOWNLOAD_MAP = True
-            mapType = f.readline().rstrip("\n")
-            if mapType == "Roadmap":
-                MAP_TYPE = "mt1.google.com/vt/lyrs=m&hl=en&x={x}&y={y}&z={z}"
-            elif mapType == "Terrain":
-                MAP_TYPE = "mt1.google.com/vt/lyrs=p&hl=en&x={x}&y={y}&z={z}"
-            elif mapType == "Satellite":
-                MAP_TYPE = "mt1.google.com/vt/lyrs=s&hl=en&x={x}&y={y}&z={z}"
-            elif mapType == "Hybrid":
-                MAP_TYPE = "mt1.google.com/vt/lyrs=y&hl=en&x={x}&y={y}&z={z}"
-            else:
-                DOWNLOAD_MAP = False
-                f.readline()
-
-        LINE_WIDTH = float(f.readline().rstrip("\n"))
-        SCRIPT_SLEEP = float(f.readline().rstrip("\n"))
-
-    #Set the first too as the pan tool
-    iface.actionPan().trigger()
-
-    #Deal with map download and type
-    if DOWNLOAD_MAP:
-        service_url = MAP_TYPE
-        service_uri = "type=xyz&zmin=0&zmax=21&url=https://"+requests.utils.quote(service_url)
-        #print ("YES!")
-
-        if QgsProject.instance().mapLayersByName("Google Sat"):
-            print("Google image is already loaded!")
-        else:
-            iface.addRasterLayer(service_uri, "Google Sat", "wms")
-
-    #Initialize the tool
-    canvas_clicked = DeclinationTool(iface.mapCanvas(), iface)
-
-    #Set the buttons on the toolbar
-    action_tool = QAction(QIcon(tool_icon_path), 'Start Tool')
-    action_tool.triggered.connect(azimuth_tool)
-    iface.addToolBarIcon(action_tool)
-
-    action_zoom = QAction(QIcon(location_icon_path), 'Go to Coords')
-    action_zoom.triggered.connect(zoom_to_coords)
-    iface.addToolBarIcon(action_zoom)
-
-    set_parameters = QAction(QIcon(params_icon_path), 'Set Params')
-    set_parameters.triggered.connect(set_params)
-    iface.addToolBarIcon(set_parameters)
-
-    print ('OK')
-
-
-
-	  	
